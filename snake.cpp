@@ -7,6 +7,8 @@
 #include <iostream>
 #include <algorithm>
 #include <string>
+#include <fstream>
+#include <sstream>
 
 using namespace std;
 
@@ -19,6 +21,86 @@ const int SPEED_DECREMENT = 3;
 
 enum Direction { STOP = 0, LEFT, RIGHT, UP, DOWN };
 enum GameState { RUNNING, PAUSED, GAME_OVER, MENU };
+
+class Logger {
+private:
+    ofstream logFile;
+    chrono::steady_clock::time_point startTime;
+    
+public:
+    Logger() {
+        logFile.open("snake_game_log.txt", ios::app);
+        startTime = chrono::steady_clock::now();
+        log("Game session started");
+    }
+    
+    ~Logger() {
+        log("Game session ended");
+        logFile.close();
+    }
+    
+    void log(const string& message) {
+        auto now = chrono::steady_clock::now();
+        auto duration = chrono::duration_cast<chrono::milliseconds>(now - startTime);
+        
+        logFile << "[" << duration.count() << "ms] " << message << endl;
+    }
+    
+    void logGameEvent(int score, int level, const string& event) {
+        log("Score: " + to_string(score) + " | Level: " + to_string(level) + " | " + event);
+    }
+};
+
+class ConfigManager {
+private:
+    string configFile = "snake_config.txt";
+    
+public:
+    struct GameConfig {
+        int width = WIDTH;
+        int height = HEIGHT;
+        int initialSpeed = INITIAL_SPEED;
+        int minSpeed = MIN_SPEED;
+    };
+    
+    GameConfig loadConfig() {
+        GameConfig config;
+        ifstream file(configFile);
+        
+        if (file.is_open()) {
+            string line;
+            while (getline(file, line)) {
+                istringstream iss(line);
+                string key, value;
+                if (getline(iss, key, '=') && getline(iss, value)) {
+                    if (key == "width") config.width = stoi(value);
+                    else if (key == "height") config.height = stoi(value);
+                    else if (key == "initial_speed") config.initialSpeed = stoi(value);
+                    else if (key == "min_speed") config.minSpeed = stoi(value);
+                }
+            }
+            file.close();
+        }
+        
+        return config;
+    }
+    
+    void saveConfig(const GameConfig& config) {
+        ofstream file(configFile);
+        if (file.is_open()) {
+            file << "width=" << config.width << endl;
+            file << "height=" << config.height << endl;
+            file << "initial_speed=" << config.initialSpeed << endl;
+            file << "min_speed=" << config.minSpeed << endl;
+            file.close();
+        }
+    }
+    
+    void createDefaultConfig() {
+        GameConfig defaultConfig;
+        saveConfig(defaultConfig);
+    }
+};
 
 class SnakeGame {
 private:
@@ -34,41 +116,58 @@ private:
     random_device rd;
     mt19937 gen;
 
-    // Double buffering variables
+    // System components
     string buffer;
     HANDLE hConsole;
     DWORD bytesWritten;
+    Logger logger;
+    ConfigManager configManager;
+    ConfigManager::GameConfig config;
+
+    // Performance metrics
+    int frameCount;
+    chrono::steady_clock::time_point fpsStartTime;
+    double averageFPS;
 
 public:
     SnakeGame() : gen(rd()), state(MENU), score(0), highScore(0), 
-                 speed(INITIAL_SPEED), level(1) {
+                 level(1), frameCount(0), averageFPS(0.0) {
         hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
-        buffer.reserve((WIDTH + 3) * (HEIGHT + 5)); // Pre-allocate buffer
+        
+        // Load configuration
+        config = configManager.loadConfig();
+        if (config.width < 10) configManager.createDefaultConfig();
+        
+        speed = config.initialSpeed;
+        buffer.reserve((config.width + 3) * (config.height + 5));
+        
+        fpsStartTime = chrono::steady_clock::now();
         initializeGame();
     }
 
     void initializeGame() {
         score = 0;
         level = 1;
-        speed = INITIAL_SPEED;
+        speed = config.initialSpeed;
         dir = STOP;
         snake.clear();
         foods.clear();
         
-        int startX = WIDTH / 2;
-        int startY = HEIGHT / 2;
+        int startX = config.width / 2;
+        int startY = config.height / 2;
         for (int i = 0; i < 3; i++) {
             snake.push_back({startX - i, startY});
         }
 
         generateFoods(2);
+        logger.logGameEvent(score, level, "Game initialized");
     }
 
     void generateFoods(int count) {
         vector<pair<int, int>> emptyCells;
         
-        for (int x = 1; x < WIDTH - 1; x++) {
-            for (int y = 1; y < HEIGHT - 1; y++) {
+        for (int x = 1; x < config.width - 1; x++) {
+            for (int y = 1; y < config.height - 1; y++) {
                 if (!isPositionOccupied(x, y)) {
                     emptyCells.push_back({x, y});
                 }
@@ -92,17 +191,29 @@ public:
         return false;
     }
 
+    void updateFPS() {
+        frameCount++;
+        auto currentTime = chrono::steady_clock::now();
+        auto elapsed = chrono::duration_cast<chrono::seconds>(currentTime - fpsStartTime);
+        
+        if (elapsed.count() >= 1) {
+            averageFPS = frameCount / elapsed.count();
+            frameCount = 0;
+            fpsStartTime = currentTime;
+        }
+    }
+
     void draw() {
         buffer.clear();
         
         // Draw border
-        string border(WIDTH + 2, '#');
+        string border(config.width + 2, '#');
         buffer += border + "\n";
 
-        // Draw game area with double buffering
-        for (int y = 0; y < HEIGHT; y++) {
+        // Draw game area
+        for (int y = 0; y < config.height; y++) {
             buffer += "#";
-            for (int x = 0; x < WIDTH; x++) {
+            for (int x = 0; x < config.width; x++) {
                 char output = ' ';
                 
                 if (x == snake[0].first && y == snake[0].second) 
@@ -123,10 +234,9 @@ public:
         }
         buffer += border + "\n";
 
-        // Draw HUD
         drawHUD();
         
-        // Write entire buffer at once to reduce flickering
+        // Single console write for double buffering
         COORD coord = {0, 0};
         CONSOLE_SCREEN_BUFFER_INFO csbi;
         GetConsoleScreenBufferInfo(hConsole, &csbi);
@@ -134,11 +244,13 @@ public:
         FillConsoleOutputCharacter(hConsole, ' ', consoleSize, coord, &bytesWritten);
         SetConsoleCursorPosition(hConsole, coord);
         WriteConsole(hConsole, buffer.c_str(), buffer.length(), &bytesWritten, NULL);
+        
+        updateFPS();
     }
 
     void drawHUD() {
-        buffer += "Score: " + to_string(score) + " | High Score: " + to_string(highScore);
-        buffer += " | Level: " + to_string(level) + " | Speed: " + to_string((INITIAL_SPEED - speed) / SPEED_DECREMENT) + "\n";
+        buffer += "Score: " + to_string(score) + " | High: " + to_string(highScore);
+        buffer += " | Level: " + to_string(level) + " | FPS: " + to_string((int)averageFPS) + "\n";
         
         switch (state) {
             case RUNNING: 
@@ -201,8 +313,14 @@ public:
             case 'd': newDir = RIGHT; break;
             case 'w': newDir = UP; break;
             case 's': newDir = DOWN; break;
-            case 'p': state = PAUSED; return;
-            case 'x': state = GAME_OVER; return;
+            case 'p': 
+                state = PAUSED;
+                logger.log("Game paused");
+                break;
+            case 'x': 
+                state = GAME_OVER;
+                logger.log("Game exited by user");
+                break;
         }
         
         if (!isOppositeDirection(newDir)) {
@@ -238,6 +356,7 @@ public:
         if (checkCollision(newHead)) {
             state = GAME_OVER;
             updateHighScore();
+            logger.logGameEvent(score, level, "Game over - collision");
             return;
         }
 
@@ -248,12 +367,14 @@ public:
             if (*it == newHead) {
                 score += (it == foods.begin()) ? 10 : 20;
                 ateFood = true;
+                logger.logGameEvent(score, level, "Food collected");
                 it = foods.erase(it);
                 
                 if (score >= level * 50) {
                     level++;
-                    if (speed > MIN_SPEED) speed -= SPEED_DECREMENT;
+                    if (speed > config.minSpeed) speed -= SPEED_DECREMENT;
                     generateFoods(min(level, 4));
+                    logger.logGameEvent(score, level, "Level up");
                 }
             } else {
                 ++it;
@@ -268,8 +389,8 @@ public:
     }
 
     bool checkCollision(const pair<int, int>& pos) {
-        if (pos.first < 0 || pos.first >= WIDTH || 
-            pos.second < 0 || pos.second >= HEIGHT) {
+        if (pos.first < 0 || pos.first >= config.width || 
+            pos.second < 0 || pos.second >= config.height) {
             return true;
         }
         
@@ -277,32 +398,42 @@ public:
     }
 
     void updateHighScore() {
-        highScore = max(highScore, score);
+        if (score > highScore) {
+            highScore = score;
+            logger.log("New high score: " + to_string(highScore));
+        }
     }
 
     void run() {
+        logger.log("Game loop started");
         while (state != GAME_OVER || _kbhit()) {
             draw();
             handleInput();
             update();
-            this_thread::sleep_for(chrono::milliseconds(10)); // Reduced sleep for smoother rendering
+            this_thread::sleep_for(chrono::milliseconds(10));
         }
+        logger.log("Game loop ended");
     }
 };
 
 int main() {
-    SetConsoleTitleA("Advanced Snake Game - Flicker Free");
+    SetConsoleTitleA("Professional Snake Game");
     system("chcp 65001 > nul");
     
-    // Hide cursor for better visual experience
+    // Hide cursor
     HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
     CONSOLE_CURSOR_INFO cursorInfo;
     GetConsoleCursorInfo(hConsole, &cursorInfo);
     cursorInfo.bVisible = FALSE;
     SetConsoleCursorInfo(hConsole, &cursorInfo);
     
-    SnakeGame game;
-    game.run();
+    try {
+        SnakeGame game;
+        game.run();
+    } catch (const exception& e) {
+        cerr << "Game error: " << e.what() << endl;
+        return 1;
+    }
     
     return 0;
 }

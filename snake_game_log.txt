@@ -1,0 +1,12 @@
+[0ms] Game session started
+[1ms] Score: 0 | Level: 1 | Game initialized
+[1ms] Game loop started
+[5357ms] Score: 10 | Level: 1 | Food collected
+[7233ms] Score: 20 | Level: 1 | Food collected
+[7543ms] Score: 40 | Level: 1 | Food collected
+[10211ms] Score: 50 | Level: 1 | Food collected
+[10211ms] Score: 50 | Level: 2 | Level up
+[10996ms] New high score: 50
+[10996ms] Score: 50 | Level: 2 | Game over - collision
+[11011ms] Game loop ended
+[11011ms] Game session ended
