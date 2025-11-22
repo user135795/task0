@@ -6,48 +6,54 @@
 #include <thread>
 #include <iostream>
 #include <algorithm>
+#include <string>
 
 using namespace std;
 
-// 游戏常量
+// Game constants
 const int WIDTH = 40;
 const int HEIGHT = 20;
 const int INITIAL_SPEED = 150;
-const int MIN_SPEED = 50;
+const int MIN_SPEED = 30;
+const int SPEED_DECREMENT = 3;
 
 enum Direction { STOP = 0, LEFT, RIGHT, UP, DOWN };
+enum GameState { RUNNING, PAUSED, GAME_OVER, MENU };
 
 class SnakeGame {
 private:
-    bool gameOver;
-    bool isPaused;
+    GameState state;
     int score;
     int highScore;
     vector<pair<int, int>> snake;
-    pair<int, int> food;
+    vector<pair<int, int>> foods;
     Direction dir;
     int speed;
-    int foodsEaten;
-
+    int level;
+    
     random_device rd;
     mt19937 gen;
-    uniform_int_distribution<int> distX;
-    uniform_int_distribution<int> distY;
+
+    // Double buffering variables
+    string buffer;
+    HANDLE hConsole;
+    DWORD bytesWritten;
 
 public:
-    SnakeGame() : gen(rd()), distX(1, WIDTH - 2), distY(1, HEIGHT - 2), 
-                 highScore(0), foodsEaten(0), isPaused(false) {
-        setup();
+    SnakeGame() : gen(rd()), state(MENU), score(0), highScore(0), 
+                 speed(INITIAL_SPEED), level(1) {
+        hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
+        buffer.reserve((WIDTH + 3) * (HEIGHT + 5)); // Pre-allocate buffer
+        initializeGame();
     }
 
-    void setup() {
-        gameOver = false;
-        isPaused = false;
+    void initializeGame() {
         score = 0;
-        foodsEaten = 0;
+        level = 1;
         speed = INITIAL_SPEED;
         dir = STOP;
         snake.clear();
+        foods.clear();
         
         int startX = WIDTH / 2;
         int startY = HEIGHT / 2;
@@ -55,76 +61,153 @@ public:
             snake.push_back({startX - i, startY});
         }
 
-        generateFood();
+        generateFoods(2);
     }
 
-    void generateFood() {
+    void generateFoods(int count) {
         vector<pair<int, int>> emptyCells;
         
-        // 收集所有空单元格
-        for (int x = 0; x < WIDTH; x++) {
-            for (int y = 0; y < HEIGHT; y++) {
-                if (!isSnakePosition(x, y)) {
+        for (int x = 1; x < WIDTH - 1; x++) {
+            for (int y = 1; y < HEIGHT - 1; y++) {
+                if (!isPositionOccupied(x, y)) {
                     emptyCells.push_back({x, y});
                 }
             }
         }
         
-        if (!emptyCells.empty()) {
-            uniform_int_distribution<int> dist(0, emptyCells.size() - 1);
-            food = emptyCells[dist(gen)];
+        shuffle(emptyCells.begin(), emptyCells.end(), gen);
+        
+        for (int i = 0; i < min(count, (int)emptyCells.size()); i++) {
+            foods.push_back(emptyCells[i]);
         }
     }
 
-    bool isSnakePosition(int x, int y) {
-        return any_of(snake.begin(), snake.end(), 
+    bool isPositionOccupied(int x, int y) {
+        for (const auto& segment : snake) {
+            if (segment.first == x && segment.second == y) return true;
+        }
+        for (const auto& food : foods) {
+            if (food.first == x && food.second == y) return true;
+        }
+        return false;
+    }
+
+    void draw() {
+        buffer.clear();
+        
+        // Draw border
+        string border(WIDTH + 2, '#');
+        buffer += border + "\n";
+
+        // Draw game area with double buffering
+        for (int y = 0; y < HEIGHT; y++) {
+            buffer += "#";
+            for (int x = 0; x < WIDTH; x++) {
+                char output = ' ';
+                
+                if (x == snake[0].first && y == snake[0].second) 
+                    output = 'O';
+                else if (isSnakeBody(x, y)) 
+                    output = 'o';
+                else {
+                    for (const auto& food : foods) {
+                        if (food.first == x && food.second == y) {
+                            output = (food == foods[0]) ? 'F' : '$';
+                            break;
+                        }
+                    }
+                }
+                buffer += output;
+            }
+            buffer += "#\n";
+        }
+        buffer += border + "\n";
+
+        // Draw HUD
+        drawHUD();
+        
+        // Write entire buffer at once to reduce flickering
+        COORD coord = {0, 0};
+        CONSOLE_SCREEN_BUFFER_INFO csbi;
+        GetConsoleScreenBufferInfo(hConsole, &csbi);
+        DWORD consoleSize = csbi.dwSize.X * csbi.dwSize.Y;
+        FillConsoleOutputCharacter(hConsole, ' ', consoleSize, coord, &bytesWritten);
+        SetConsoleCursorPosition(hConsole, coord);
+        WriteConsole(hConsole, buffer.c_str(), buffer.length(), &bytesWritten, NULL);
+    }
+
+    void drawHUD() {
+        buffer += "Score: " + to_string(score) + " | High Score: " + to_string(highScore);
+        buffer += " | Level: " + to_string(level) + " | Speed: " + to_string((INITIAL_SPEED - speed) / SPEED_DECREMENT) + "\n";
+        
+        switch (state) {
+            case RUNNING: 
+                buffer += "WASD: Move | P: Pause | X: Exit\n";
+                break;
+            case PAUSED: 
+                buffer += "*** PAUSED - Press P to resume ***\n";
+                break;
+            case GAME_OVER: 
+                buffer += "*** GAME OVER ***\n";
+                buffer += "R: Restart | X: Exit\n";
+                break;
+            case MENU:
+                buffer += "*** SNAKE GAME ***\n";
+                buffer += "Press SPACE to start | X: Exit\n";
+                break;
+        }
+    }
+
+    bool isSnakeBody(int x, int y) {
+        return any_of(snake.begin() + 1, snake.end(),
                      [x, y](const auto& segment) {
                          return segment.first == x && segment.second == y;
                      });
     }
 
-    void draw() {
-        system("cls");
-
-        // 绘制游戏区域
-        for (int i = 0; i < WIDTH + 2; i++) cout << "#";
-        cout << endl;
-
-        for (int y = 0; y < HEIGHT; y++) {
-            for (int x = 0; x < WIDTH; x++) {
-                if (x == 0) cout << "#";
-
-                if (x == snake[0].first && y == snake[0].second)
-                    cout << "O";
-                else if (isSnakeBody(x, y))
-                    cout << "o";
-                else if (x == food.first && y == food.second)
-                    cout << "F";
-                else
-                    cout << " ";
-
-                if (x == WIDTH - 1) cout << "#";
-            }
-            cout << endl;
-        }
-
-        for (int i = 0; i < WIDTH + 2; i++) cout << "#";
-        cout << endl;
-
-        cout << "Score: " << score << " | High Score: " << highScore;
-        cout << " | Speed: " << (INITIAL_SPEED - speed) / 2 << endl;
-        cout << "WASD: Move | P: Pause | R: Restart | X: Exit" << endl;
+    void handleInput() {
+        if (!_kbhit()) return;
         
-        if (isPaused) cout << "*** PAUSED ***" << endl;
-        if (gameOver) cout << "*** GAME OVER - Press R to restart ***" << endl;
+        int key = tolower(_getch());
+        
+        switch (state) {
+            case MENU:
+                if (key == ' ') state = RUNNING;
+                else if (key == 'x') state = GAME_OVER;
+                break;
+                
+            case RUNNING:
+                handleRunningInput(key);
+                break;
+                
+            case PAUSED:
+                if (key == 'p') state = RUNNING;
+                break;
+                
+            case GAME_OVER:
+                if (key == 'r') {
+                    initializeGame();
+                    state = RUNNING;
+                }
+                break;
+        }
     }
 
-    bool isSnakeBody(int x, int y) {
-        for (size_t i = 1; i < snake.size(); i++) {
-            if (snake[i].first == x && snake[i].second == y)
-                return true;
+    void handleRunningInput(int key) {
+        Direction newDir = dir;
+        
+        switch (key) {
+            case 'a': newDir = LEFT; break;
+            case 'd': newDir = RIGHT; break;
+            case 'w': newDir = UP; break;
+            case 's': newDir = DOWN; break;
+            case 'p': state = PAUSED; return;
+            case 'x': state = GAME_OVER; return;
         }
-        return false;
+        
+        if (!isOppositeDirection(newDir)) {
+            dir = newDir;
+        }
     }
 
     bool isOppositeDirection(Direction newDir) {
@@ -134,37 +217,15 @@ public:
                (newDir == DOWN && dir == UP);
     }
 
-    bool checkCollision(const pair<int, int>& head) {
-        if (head.first < 0 || head.first >= WIDTH || 
-            head.second < 0 || head.second >= HEIGHT) {
-            return true;
-        }
-        
-        for (size_t i = 1; i < snake.size(); i++) {
-            if (snake[i] == head) return true;
-        }
-        
-        return false;
-    }
+    void update() {
+        if (state != RUNNING || dir == STOP) return;
 
-    void input() {
-        if (_kbhit()) {
-            int key = _getch();
-            
-            switch (tolower(key)) {
-                case 'a': if (!isOppositeDirection(LEFT)) dir = LEFT; break;
-                case 'd': if (!isOppositeDirection(RIGHT)) dir = RIGHT; break;
-                case 'w': if (!isOppositeDirection(UP)) dir = UP; break;
-                case 's': if (!isOppositeDirection(DOWN)) dir = DOWN; break;
-                case 'x': gameOver = true; break;
-                case 'r': if (gameOver) setup(); break;
-                case 'p': isPaused = !isPaused; break;
-            }
-        }
-    }
-
-    void logic() {
-        if (isPaused || dir == STOP || gameOver) return;
+        static auto lastUpdate = chrono::steady_clock::now();
+        auto now = chrono::steady_clock::now();
+        auto elapsed = chrono::duration_cast<chrono::milliseconds>(now - lastUpdate);
+        
+        if (elapsed.count() < speed) return;
+        lastUpdate = now;
 
         pair<int, int> newHead = snake[0];
         switch (dir) {
@@ -175,48 +236,73 @@ public:
         }
 
         if (checkCollision(newHead)) {
-            gameOver = true;
+            state = GAME_OVER;
             updateHighScore();
             return;
         }
 
         snake.insert(snake.begin(), newHead);
 
-        if (newHead == food) {
-            score += 10;
-            foodsEaten++;
-            generateFood();
-            if (speed > MIN_SPEED && foodsEaten % 3 == 0) {
-                speed -= 5;
+        bool ateFood = false;
+        for (auto it = foods.begin(); it != foods.end();) {
+            if (*it == newHead) {
+                score += (it == foods.begin()) ? 10 : 20;
+                ateFood = true;
+                it = foods.erase(it);
+                
+                if (score >= level * 50) {
+                    level++;
+                    if (speed > MIN_SPEED) speed -= SPEED_DECREMENT;
+                    generateFoods(min(level, 4));
+                }
+            } else {
+                ++it;
             }
-        } else {
-            snake.pop_back();
         }
+
+        if (!ateFood) {
+            snake.pop_back();
+        } else if (foods.empty()) {
+            generateFoods(min(level + 1, 4));
+        }
+    }
+
+    bool checkCollision(const pair<int, int>& pos) {
+        if (pos.first < 0 || pos.first >= WIDTH || 
+            pos.second < 0 || pos.second >= HEIGHT) {
+            return true;
+        }
+        
+        return isSnakeBody(pos.first, pos.second);
     }
 
     void updateHighScore() {
-        if (score > highScore) {
-            highScore = score;
-        }
+        highScore = max(highScore, score);
     }
 
     void run() {
-        while (!gameOver) {
+        while (state != GAME_OVER || _kbhit()) {
             draw();
-            input();
-            logic();
-            this_thread::sleep_for(chrono::milliseconds(speed));
+            handleInput();
+            update();
+            this_thread::sleep_for(chrono::milliseconds(10)); // Reduced sleep for smoother rendering
         }
-        draw();
-        cout << "Final Score: " << score << " - Press any key to exit..." << endl;
-        _getch();
     }
 };
 
 int main() {
-    SetConsoleTitleA("Enhanced Snake Game");
+    SetConsoleTitleA("Advanced Snake Game - Flicker Free");
     system("chcp 65001 > nul");
+    
+    // Hide cursor for better visual experience
+    HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
+    CONSOLE_CURSOR_INFO cursorInfo;
+    GetConsoleCursorInfo(hConsole, &cursorInfo);
+    cursorInfo.bVisible = FALSE;
+    SetConsoleCursorInfo(hConsole, &cursorInfo);
+    
     SnakeGame game;
     game.run();
+    
     return 0;
 }
