@@ -20,6 +20,7 @@ class SnakeGame {
 private:
     bool gameOver;
     int score;
+    int highScore;
     vector<pair<int, int>> snake; // 蛇身坐标
     pair<int, int> food;          // 食物坐标
     Direction dir;
@@ -32,7 +33,7 @@ private:
     uniform_int_distribution<int> distY;
 
 public:
-    SnakeGame() : gen(rd()), distX(1, WIDTH - 2), distY(1, HEIGHT - 2) {
+    SnakeGame() : gen(rd()), distX(1, WIDTH - 2), distY(1, HEIGHT - 2), highScore(0) {
         setup();
     }
 
@@ -109,8 +110,8 @@ public:
         cout << endl;
 
         // 显示分数和提示
-        cout << "得分: " << score << endl;
-        cout << "使用WASD控制方向，按X退出游戏" << endl;
+        cout << "得分: " << score << "  最高分: " << highScore << endl;
+        cout << "使用WASD控制方向，P暂停，X退出游戏" << endl;
         
         if (gameOver) {
             cout << "游戏结束! 按R重新开始" << endl;
@@ -125,27 +126,60 @@ public:
         return false;
     }
 
+    // 检查是否为相反方向
+    bool isOppositeDirection(Direction newDir, Direction currentDir) {
+        return (newDir == LEFT && currentDir == RIGHT) ||
+               (newDir == RIGHT && currentDir == LEFT) ||
+               (newDir == UP && currentDir == DOWN) ||
+               (newDir == DOWN && currentDir == UP);
+    }
+
+    // 改进的碰撞检测
+    bool checkCollision(const pair<int, int>& head) {
+        // 边界碰撞
+        if (head.first < 0 || head.first >= WIDTH || 
+            head.second < 0 || head.second >= HEIGHT) {
+            return true;
+        }
+        
+        // 自身碰撞（跳过蛇头）
+        for (size_t i = 1; i < snake.size(); i++) {
+            if (snake[i] == head) {
+                return true;
+            }
+        }
+        
+        return false;
+    }
+
     void input() {
         if (_kbhit()) {
-            switch (_getch()) {
-                case 'a': case 'A':
-                    if (dir != RIGHT) dir = LEFT;
-                    break;
-                case 'd': case 'D':
-                    if (dir != LEFT) dir = RIGHT;
-                    break;
-                case 'w': case 'W':
-                    if (dir != DOWN) dir = UP;
-                    break;
-                case 's': case 'S':
-                    if (dir != UP) dir = DOWN;
-                    break;
+            int key = _getch();
+            Direction newDir = dir;
+            
+            switch (key) {
+                case 'a': case 'A': newDir = LEFT; break;
+                case 'd': case 'D': newDir = RIGHT; break;
+                case 'w': case 'W': newDir = UP; break;
+                case 's': case 'S': newDir = DOWN; break;
                 case 'x': case 'X':
                     gameOver = true;
                     break;
                 case 'r': case 'R':
                     if (gameOver) setup();
                     break;
+                case 'p': case 'P': // 暂停功能
+                    cout << "游戏暂停，按P继续..." << endl;
+                    while (true) {
+                        if (_kbhit() && _getch() == 'p') break;
+                        this_thread::sleep_for(chrono::milliseconds(100));
+                    }
+                    break;
+            }
+            
+            // 防止反向移动
+            if (!isOppositeDirection(newDir, dir)) {
+                dir = newDir;
             }
         }
     }
@@ -164,19 +198,11 @@ public:
             case DOWN:  newHead.second++; break;
         }
 
-        // 检查碰撞边界
-        if (newHead.first <= 0 || newHead.first >= WIDTH - 1 ||
-            newHead.second < 0 || newHead.second >= HEIGHT) {
+        // 使用改进的碰撞检测
+        if (checkCollision(newHead)) {
             gameOver = true;
+            updateHighScore();
             return;
-        }
-
-        // 检查碰撞自身
-        for (size_t i = 0; i < snake.size(); i++) {
-            if (snake[i] == newHead) {
-                gameOver = true;
-                return;
-            }
         }
 
         // 移动蛇身
@@ -191,6 +217,12 @@ public:
         } else {
             // 如果没有吃到食物，移除尾部
             snake.pop_back();
+        }
+    }
+
+    void updateHighScore() {
+        if (score > highScore) {
+            highScore = score;
         }
     }
 
